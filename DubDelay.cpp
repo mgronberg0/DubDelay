@@ -20,7 +20,7 @@ float lp_coeff = 0.7f;
 float G = 4.0f; // saturation scaling
 
 // Control smooting state vars
-float motor_coeff = 0.00007f;
+float motor_coeff = 0.0005f;
 float smooth_lpFc = 0.5f;
 float smooth_delayT = Fs * 0.5f;
 float smooth_feedback = 0.3f;
@@ -38,8 +38,8 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
 	// Delay smoothing is handled per sample
 	float dKnob = (480.0f + raw*raw * (N - 480));
 	// 1.1 coeff allows for explosive feedback
-	smooth_feedback += (hw.GetKnobValue(1)*(1.1) - smooth_feedback) * ctrl_coeff;
-	smooth_lpFc += (hw.GetKnobValue(2) - smooth_lpFc) * ctrl_coeff;
+	smooth_feedback += (hw.GetKnobValue(1)*(1.1f) - smooth_feedback) * ctrl_coeff;
+	smooth_lpFc = fmaxf( 0.001f, fminf(0.995f, smooth_lpFc + ((hw.GetKnobValue(2) - smooth_lpFc) * ctrl_coeff)));
 	// squre the raw 0 - 1 value for G: low G values are more drastic
 	raw = hw.GetKnobValue(3);
 	smooth_saturationG += ((1.0f + (raw*raw * 9.0f)) - smooth_saturationG) * ctrl_coeff;
@@ -50,6 +50,7 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
 	{
 		// Delay smoothing is handled per sample
 		smooth_delayT += (dKnob - smooth_delayT) * motor_coeff;
+		smooth_delayT = fmaxf(1.0f, fminf(static_cast<float>(N - 1),smooth_delayT));
 		readIndexF = writeIndex - smooth_delayT;
 		if(readIndexF<0){
 			readIndexF = readIndexF+N;
