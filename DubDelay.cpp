@@ -10,41 +10,57 @@ constexpr int Fs = 48000;
 
 DSY_SDRAM_BSS float Buffer[N];
 int writeIndex = 0;
-// read index will eventually be a float
+// read index is fractional
 float readIndexF = 0;
-int target_delay = static_cast<int> (Fs * 0.5f);
-float smoothed_delay = static_cast<float> (target_delay);
-float motor_coeff = 0.2f;
+
 float delayed = 0.0f; 
 float feedbackGain = 0.8f;
 float lp_state = 0.0f;
 float lp_coeff = 0.7f;
 float G = 4.0f; // saturation scaling
 
+// Control smooting state vars
+float motor_coeff = 0.0001f;
+float smooth_lpFc = 0.5f;
+float smooth_delayT = Fs * 0.5f;
+float smooth_feedback = 0.3f;
+float smooth_saturationG = 1.0f;
+float ctrl_coeff = 0.001f;
+
+float interpolateSample(float *buffer, float fractional_idx, int buf_length);
+
 
 void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size)
 {
 	hw.ProcessAllControls();
+	// Controls update
+	float raw = hw.GetKnobValue(0);
+	// Delay smoothing is handled per sample
+	float dKnob = (480.0f + raw*raw * (N - 480));
+	// 1.1 coeff allows for explosive feedback
+	smooth_feedback += (hw.GetKnobValue(1)*(1.1) - smooth_feedback) * ctrl_coeff;
+	smooth_lpFc += (hw.GetKnobValue(2) - smooth_lpFc) * ctrl_coeff;
+	// squre the raw 0 - 1 value for G: low G values are more drastic
+	raw = hw.GetKnobValue(3);
+	smooth_saturationG += ((1.0f + (raw*raw * 9.0f)) - smooth_saturationG) * ctrl_coeff;
+
+	// Delay Math
 	float y = 0.0f; //output of saturator
 	for (size_t i = 0; i < size; i++)
 	{
-		// delay smoother
-		smoothed_delay += (target_delay - smoothed_delay) * motor_coeff;
-		readIndexF = writeIndex - smoothed_delay;
+		// Delay smoothing is handled per sample
+		smooth_delayT += (dKnob - smooth_delayT) * motor_coeff;
+		readIndexF = writeIndex - smooth_delayT;
 		if(readIndexF<0){
-			readIndexF = readIndex+N;
+			readIndexF = readIndexF+N;
 		}
 		// read position will have interpolation eventualy
-		delayed = interpolate(Buffer[readIndex], readIndexF);
-		lp_state = (1-lp_coeff) * delayed + (lp_coeff*lp_state);
+		delayed = interpolateSample(Buffer, readIndexF, N);
+		lp_state = (1-smooth_lpFc) * delayed + (smooth_lpFc*lp_state);
 
 		// Saturation
-		// Needs to be in control loop or parameter sanity area:
-		if(G < 0.1){
-			G = 0.1;
-		}
-		y = tanhf(lp_state * G) / G;
-		Buffer[writeIndex] = in[0][i] + feedbackGain*y;
+		y = tanhf(lp_state * smooth_saturationG) / smooth_saturationG;
+		Buffer[writeIndex] = in[0][i] + smooth_feedback*y;
 
 		writeIndex++;
 		if (writeIndex>=N){
