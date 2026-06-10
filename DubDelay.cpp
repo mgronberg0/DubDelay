@@ -37,9 +37,12 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
 	float raw = hw.GetKnobValue(0);
 	// Delay smoothing is handled per sample
 	float dKnob = (480.0f + raw*raw * (N - 480));
-	// 1.1 coeff allows for explosive feedback
+	// 1.1 coeff allows for deeper feedback
 	smooth_feedback += (hw.GetKnobValue(1)*(1.1f) - smooth_feedback) * ctrl_coeff;
-	smooth_lpFc = fmaxf( 0.001f, fminf(0.995f, smooth_lpFc + ((hw.GetKnobValue(2) - smooth_lpFc) * ctrl_coeff)));
+	// low pass filter fc
+	raw = 100.0f * powf(120.0f, hw.GetKnobValue(2)); // 100 hz to 12khz logscale
+	raw = expf(-2.0f * PI_F * raw / Fs); // convert hz to 1 pole lowpass coeff
+	smooth_lpFc = fmaxf( 0.001f, fminf(0.995f, smooth_lpFc + ((raw - smooth_lpFc) * ctrl_coeff)));
 	// squre the raw 0 - 1 value for G: low G values are more drastic
 	raw = hw.GetKnobValue(3);
 	smooth_saturationG += ((1.0f + (raw*raw * 9.0f)) - smooth_saturationG) * ctrl_coeff;
@@ -55,7 +58,7 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
 		if(readIndexF<0){
 			readIndexF = readIndexF+N;
 		}
-		// read position will have interpolation eventualy
+		
 		delayed = interpolateSample(Buffer, readIndexF, N);
 		lp_state = (1-smooth_lpFc) * delayed + (smooth_lpFc*lp_state);
 
