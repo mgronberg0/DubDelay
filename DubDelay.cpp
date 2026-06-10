@@ -13,10 +13,13 @@ int writeIndex = 0;
 // read index is fractional
 float readIndexF = 0;
 
-float delayed = 0.0f; 
+float delayed0 = 0.0f;
+float delayed1 = 0.0f;
 float feedbackGain = 0.8f;
 float lp_state = 0.0f;
-float lp_coeff = 0.7f;
+float hp_state = 0.0f;
+float hp_coeff = expf(-2.0f * PI_F * 120 / Fs);
+
 float G = 4.0f; // saturation scaling
 
 // Control smooting state vars
@@ -58,9 +61,13 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
 		if(readIndexF<0){
 			readIndexF = readIndexF+N;
 		}
-		
-		delayed = interpolateSample(Buffer, readIndexF, N);
-		lp_state = (1-smooth_lpFc) * delayed + (smooth_lpFc*lp_state);
+		delayed1 = delayed0;
+		delayed0 = interpolateSample(Buffer, readIndexF, N);
+		// apply high pass
+		hp_state = delayed0 - delayed1 + hp_coeff * hp_state;
+
+		// apply low pass
+		lp_state = (1-smooth_lpFc) * hp_state + (smooth_lpFc*lp_state);
 
 		// Saturation
 		y = tanhf(lp_state * smooth_saturationG) / smooth_saturationG;
@@ -95,7 +102,7 @@ int main(void)
 	
 	hw.Init();
 	init();
-	hw.SetAudioBlockSize(4); // number of samples handled per callback
+	hw.SetAudioBlockSize(64); // number of samples handled per callback
 	hw.SetAudioSampleRate(SaiHandle::Config::SampleRate::SAI_48KHZ);
 	hw.StartAdc();
 	hw.StartAudio(AudioCallback);
