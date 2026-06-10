@@ -20,7 +20,7 @@ float lp_coeff = 0.7f;
 float G = 4.0f; // saturation scaling
 
 // Control smooting state vars
-float motor_coeff = 0.0001f;
+float motor_coeff = 0.00007f;
 float smooth_lpFc = 0.5f;
 float smooth_delayT = Fs * 0.5f;
 float smooth_feedback = 0.3f;
