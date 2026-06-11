@@ -23,12 +23,17 @@ float hp_coeff = expf(-2.0f * PI_F * 120 / Fs);
 float G = 4.0f; // saturation scaling
 
 // Control smooting state vars
-float motor_coeff = 0.0005f;
+float motor_coeff = 0.00005f;
 float smooth_lpFc = 0.5f;
 float smooth_delayT = Fs * 0.5f;
 float smooth_feedback = 0.3f;
 float smooth_saturationG = 1.0f;
-float ctrl_coeff = 0.001f;
+float ctrl_coeff = 0.0005f;
+// wow and flutter
+float wow_freqHz = 0.4f;
+float wow_phase = 0.0f;
+float wow_depth = 40.0f;
+float wow_freq_motor_delta = 2.0f;
 
 float interpolateSample(float *buffer, float fractional_idx, int buf_length);
 
@@ -39,7 +44,7 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
 	// Controls update
 	float raw = hw.GetKnobValue(0);
 	// Delay smoothing is handled per sample
-	float dKnob = (480.0f + raw*raw * (N - 480));
+	float dKnob = (4800.0f + raw*raw * (N - 4800));
 	// 1.1 coeff allows for deeper feedback
 	smooth_feedback += (hw.GetKnobValue(1)*(1.1f) - smooth_feedback) * ctrl_coeff;
 	// low pass filter fc
@@ -54,10 +59,22 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
 	float y = 0.0f; //output of saturator
 	for (size_t i = 0; i < size; i++)
 	{
+		
 		// Delay smoothing is handled per sample
 		smooth_delayT += (dKnob - smooth_delayT) * motor_coeff;
-		smooth_delayT = fmaxf(1.0f, fminf(static_cast<float>(N - 1),smooth_delayT));
-		readIndexF = writeIndex - smooth_delayT;
+		// wow and flutter calc
+		// we want wow_freqHz to go up when the smooth delay is smaller
+		// if the wow is at it's lowest speed when delay is at it's maximum of 3 seconds,
+		// at 1.5 seconds it's twice as fast, at 0.75 it's 4 times as fast, etc
+		wow_phase += (N/smooth_delayT)* wow_freqHz * TWOPI_F / Fs;
+		if (wow_phase>=TWOPI_F){
+			wow_phase -= TWOPI_F;
+		}
+		float mod = wow_depth * sinf(wow_phase);
+		float read_delay = smooth_delayT + mod;
+		read_delay = fmaxf(1.0f, fminf(static_cast<float>(N - 1),read_delay));
+		
+		readIndexF = writeIndex - read_delay;
 		if(readIndexF<0){
 			readIndexF = readIndexF+N;
 		}
