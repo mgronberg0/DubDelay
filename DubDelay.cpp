@@ -1,3 +1,7 @@
+// TODO: Improve parameter ranges for broader sweet spots
+// Create better saturation algo
+// fix dub macros, currently not engaging
+// add second delay line
 #include "daisy_field.h"
 #include "daisysp.h"
 
@@ -140,7 +144,7 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
 		lp_state = (1-smooth_lpFc) * hp_state + (smooth_lpFc*lp_state);
 
 		// Saturation
-		y = tanhf(lp_state * smooth_saturationG) / tanhf(smooth_saturationG);
+		y = tanhf(lp_state * smooth_saturationG) / smooth_saturationG;
 		Buffer[writeIndex] = smooth_gain*in[0][i] + smooth_feedback*y;
 
 		writeIndex++;
