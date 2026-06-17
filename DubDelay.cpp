@@ -11,7 +11,17 @@ using namespace daisysp;
 DaisyField hw;
 constexpr int N = 96000;
 constexpr int Fs = 48000;
-
+// Display Variables
+float knobPrev[DaisyField::KNOB_LAST];
+int activeKnob = 0;
+uint32_t displayTimer = 0;
+const float knobThreshold = 0.004f;
+enum knobID { KNOB_DELAY, KNOB_FEEDBACK, KNOB_LPF, KNOB_SATURATION,
+KNOB_INPUT_GAIN, KNOB_WOW, KNOB_AGE, KNOB_MIX};
+static const char* const knobNames[DaisyField::KNOB_LAST] = {
+	"DelayT", "Fdbk", "LPF", "Satur", "InGain", "Wow", "Age", "Mix"
+}
+// Buffer Management
 DSY_SDRAM_BSS float Buffer[N];
 int writeIndex = 0;
 // read index is fractional
@@ -182,5 +192,35 @@ int main(void)
 	hw.StartAudio(AudioCallback);
 	hw.led_driver.SetAllTo(0.0f);
 	hw.led_driver.SwapBuffersAndTransmit();
-	while(1) {}
+	// initilize knob probing
+	for(size_t i = 0; i < DaisyField::KNOB_LAST; i++){
+		knobPrev[i] = hw.GetKnobValue(i);
+	}
+	while(1) {
+		// Display manager
+		uint32_t now = System::GetNow();
+		if(now - displayTimer >= 40)
+		{
+			displayTimer = now;
+
+			for(size_t i = 0; i < DaisyField::KNOB_LAST; i++){
+				float v = hw.GetKnobValue(i);
+				if(fabsf(v - knobPrev[i]) > knobThreshold){
+					activeKnob = (int)i;
+				}
+				knobPrev[i] = v;
+			}
+
+			FixedCapStr<32> str("Knob ");
+			str.AppendInt(activeKnob + 1);
+			str.Append(": ");
+			str.AppendFloat(hw.GetKnobValue(activeKnob), 3);
+
+			hw.display.Fill(false);
+			hw.display.SetCursor(0,0);
+			hw.display.WriteString(str.Cstr(), Font_7x10, true);
+			hw.display.Update();
+
+		}
+	}
 }
