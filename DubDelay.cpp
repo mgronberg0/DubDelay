@@ -16,11 +16,19 @@ float knobPrev[DaisyField::KNOB_LAST];
 int activeKnob = 0;
 uint32_t displayTimer = 0;
 const float knobThreshold = 0.004f;
-enum knobID { KNOB_DELAY, KNOB_FEEDBACK, KNOB_LPF, KNOB_SATURATION,
-KNOB_INPUT_GAIN, KNOB_WOW, KNOB_AGE, KNOB_MIX};
+enum knobID { 
+	KNOB_DELAY, 		//1
+	KNOB_FEEDBACK, 		//2
+	KNOB_LPF,  			//3
+	KNOB_SATURATION, 	//4
+	KNOB_INPUT_GAIN, 	//5
+	KNOB_WOW, 			//6
+	KNOB_AGE, 			//7
+	KNOB_MIX 			//8
+	};
 static const char* const knobNames[DaisyField::KNOB_LAST] = {
 	"DelayT", "Fdbk", "LPF", "Satur", "InGain", "Wow", "Age", "Mix"
-}
+};
 // Buffer Management
 DSY_SDRAM_BSS float Buffer[N];
 int writeIndex = 0;
@@ -38,7 +46,7 @@ float G = 4.0f; // saturation scaling
 
 // Control smooting state vars
 float motor_coeff = 0.00005f;
-float mix_coeff   = 0.01f;
+float mix_coeff   = 0.9f;
 float ctrl_coeff = 0.01f;
 float smooth_lpFc = 0.5f;
 float smooth_delayT = Fs * 0.5f;
@@ -56,30 +64,38 @@ float input_feedback = 0.3f;
 float input_lpFc = 12000.0f;
 float input_saturationG = 1.0f;
 // wow and flutter
-float wow_freqHz = 0.4f;
+float wow_freqHz = 0.80f;
 float wow_phase = 0.0f;
-float wow_depth = 200.0f;
+float wow_depth = 100.0f;
 float wow_freq_motor_delta = 2.0f;
+// Hiss level (between -120dB and -40dB)
+float hiss_level_scalar = 0.0f;
+float hiss_hp_coeff = expf(-2.0f * PI_F * 800 / Fs);
+float hiss_n1 = 0.0f;
+float hiss_hp_state = 0.0f;
+float dropout_threshold = 1.01f;
 // Dub Macro Coeffs
 bool dub_held = false;
 float fast_coeff = 0.0002f;
 float slow_coeff = 0.00005f;
 
 float interpolateSample(float *buffer, float fractional_idx, int buf_length);
+float MagToDB(float scalar);
+float DBToMag(float dB);
 
 
 void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, size_t size)
 {
 	hw.ProcessAllControls();
 	// Controls update
-	float raw = hw.GetKnobValue(0);
+	float raw = hw.GetKnobValue(KNOB_DELAY);
 	// Delay smoothing is handled per sample
 	float input_delay = (4800.0f + raw*raw * (N - 4800));
 	// input gain 
-	input_gain = 1.5f * hw.GetKnobValue(4);
+	input_gain = 1.5f * hw.GetKnobValue(KNOB_INPUT_GAIN);
 	//input_gain += (1.5f * raw - input_gain) * ctrl_coeff;
 	// Volume Params
-	raw = hw.GetKnobValue(7);
+	raw = hw.GetKnobValue(KNOB_MIX);
 	if(raw<0.75f){
 		input_dry_mix = 1.0f;
 		input_wet_mix = (raw / 0.75f);
@@ -89,15 +105,27 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
 		input_wet_mix = 1.0f;
 	}
 	// Feedback
-	raw = hw.GetKnobValue(1);
+	raw = hw.GetKnobValue(KNOB_FEEDBACK);
 	input_feedback = raw*(1.1f);
 	// smooth_feedback += (hw.GetKnobValue(1)*(1.4f) - smooth_feedback) * ctrl_coeff;
 	// low pass filter fc
-	raw = 100.0f * powf(120.0f, hw.GetKnobValue(2)); // 100 hz to 12khz logscale
+	raw = 100.0f * powf(120.0f, hw.GetKnobValue(KNOB_LPF)); // 100 hz to 12khz logscale
 	input_lpFc = expf(-2.0f * PI_F * raw / Fs); // convert hz to 1 pole lowpass coeff
 	// squre the raw 0 - 1 value for G: low G values are more drastic
-	raw = hw.GetKnobValue(3);
+	raw = hw.GetKnobValue(KNOB_SATURATION);
 	input_saturationG = (1.0f + (raw * 2.0f));
+
+	raw = hw.GetKnobValue(KNOB_WOW);
+	wow_depth = 100.0f + 2000.0f*raw;
+
+	// Age
+	raw = hw.GetKnobValue(KNOB_AGE);
+	// Hiss level (between -100dB and -40dB)
+	dropout_threshold = 1.01f - 0.9f*raw;
+	hiss_level_scalar = DBToMag(-100.0f + 60.0f*raw);
+	// get random value [0 1], bias around 0.0, scale by age, decimate. this value is applied to
+	// scale the wow lfo 
+	float wow_freq_augment = 1-(((daisy::Random::GetFloat()-0.5f)*raw)*0.1);
 	
 
 	// Dub Macros:
@@ -133,7 +161,7 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
 		// we want wow_freqHz to go up when the smooth delay is smaller
 		// if the wow is at it's lowest speed when delay is at it's maximum of 3 seconds,
 		// at 1.5 seconds it's twice as fast, at 0.75 it's 4 times as fast, etc
-		wow_phase += (static_cast<float>(N)/smooth_delayT)* wow_freqHz * TWOPI_F / Fs;
+		wow_phase += (static_cast<float>(N)/smooth_delayT)* wow_freqHz*wow_freq_augment* TWOPI_F / Fs;
 		if (wow_phase>=TWOPI_F){
 			wow_phase -= TWOPI_F;
 		}
@@ -145,6 +173,7 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
 		if(readIndexF<0){
 			readIndexF = readIndexF+N;
 		}
+		// Feedback filtering
 		delayed1 = delayed0;
 		delayed0 = interpolateSample(Buffer, readIndexF, N);
 		// apply high pass
@@ -155,7 +184,12 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
 
 		// Saturation
 		y = tanhf(lp_state * smooth_saturationG) / smooth_saturationG;
-		Buffer[writeIndex] = smooth_gain*in[0][i] + smooth_feedback*y;
+		// hiss filtering
+		float hiss = (2.0f*daisy::Random::GetFloat()-1.0f)*hiss_level_scalar; 
+		hiss_hp_state = hiss - hiss_n1 + hiss_hp_coeff * hiss_hp_state;
+		hiss_n1 = hiss;
+
+		Buffer[writeIndex] = smooth_gain*in[0][i] + smooth_feedback*y + hiss_hp_state;
 
 		writeIndex++;
 		if (writeIndex>=N){
@@ -174,6 +208,14 @@ float interpolateSample(float *buffer, float fractional_idx, int buf_length)
 	int highIdx = (lowIdx+1) % buf_length;
 	float fraction = fractional_idx - lowIdx;
 	return ((buffer[highIdx] - buffer[lowIdx])*fraction) + buffer[lowIdx];
+}
+float MagToDB(float scalar)
+{
+	return 8.6858896f * logf(fmaxf(scalar, 1e-7f)); // 20/log(10)
+}
+float DBToMag(float dB)
+{
+	return pow10f(dB * 0.05f);
 }
 
 void init(void)
