@@ -11,11 +11,33 @@ using namespace daisysp;
 DaisyField hw;
 constexpr int N = 96000;
 constexpr int Fs = 48000;
+
+// Named constants for all hardcoded values
+constexpr float kHpCutoffHz         = 120.0f;
+constexpr float kHissHpCutoffHz     = 800.0f;
+constexpr float kMinDelaySamples    = 4800.0f;   // 0.1 s * Fs
+constexpr float kInputGainScale     = 1.5f;
+constexpr float kMixCrossover       = 0.75f;
+constexpr float kMixDryRolloffScale = 4.0f;
+constexpr float kFeedbackScale      = 1.1f;
+constexpr float kLpfBaseHz          = 100.0f;
+constexpr float kLpfOctaveRange     = 120.0f;
+constexpr float kSaturationGRange   = 2.0f;
+constexpr float kWowDepthMin        = 100.0f;
+constexpr float kWowDepthRange      = 2000.0f;
+constexpr float kDropoutRange       = 0.9f;
+constexpr float kHissMinDb          = -100.0f;
+constexpr float kHissDbRange        = 60.0f;
+constexpr float kWowAugmentScale    = 0.2f;
+constexpr float kDubInputGain       = 1.71f;
+constexpr float kDubDryMix          = 0.01f;
+constexpr float kDubWetMix          = 1.0f;
+constexpr uint32_t kDisplayRefreshMs = 40;
 // Display Variables
 float knobPrev[DaisyField::KNOB_LAST];
 int activeKnob = 0;
 uint32_t displayTimer = 0;
-const float knobThreshold = 0.004f;
+const float knobThreshold = 0.007f;
 enum knobID { 
 	KNOB_DELAY, 		//1
 	KNOB_FEEDBACK, 		//2
@@ -40,13 +62,13 @@ float delayed1 = 0.0f;
 float feedbackGain = 0.8f;
 float lp_state = 0.0f;
 float hp_state = 0.0f;
-float hp_coeff = expf(-2.0f * PI_F * 120 / Fs);
+float hp_coeff = expf(-2.0f * PI_F * kHpCutoffHz / Fs);
 
 float G = 4.0f; // saturation scaling
 
 // Control smooting state vars
 float motor_coeff = 0.00005f;
-float mix_coeff   = 0.9f;
+float mix_coeff   = 0.99f;
 float ctrl_coeff = 0.01f;
 float smooth_lpFc = 0.5f;
 float smooth_delayT = Fs * 0.5f;
@@ -70,7 +92,7 @@ float wow_depth = 100.0f;
 float wow_freq_motor_delta = 2.0f;
 // Hiss level (between -120dB and -40dB)
 float hiss_level_scalar = 0.0f;
-float hiss_hp_coeff = expf(-2.0f * PI_F * 800 / Fs);
+float hiss_hp_coeff = expf(-2.0f * PI_F * kHissHpCutoffHz / Fs);
 float hiss_n1 = 0.0f;
 float hiss_hp_state = 0.0f;
 float dropout_threshold = 1.01f;
@@ -90,42 +112,42 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
 	// Controls update
 	float raw = hw.GetKnobValue(KNOB_DELAY);
 	// Delay smoothing is handled per sample
-	float input_delay = (4800.0f + raw*raw * (N - 4800));
+	float input_delay = (kMinDelaySamples + raw*raw * (N - kMinDelaySamples));
 	// input gain 
-	input_gain = 1.5f * hw.GetKnobValue(KNOB_INPUT_GAIN);
+	input_gain = kInputGainScale * hw.GetKnobValue(KNOB_INPUT_GAIN);
 	//input_gain += (1.5f * raw - input_gain) * ctrl_coeff;
 	// Volume Params
 	raw = hw.GetKnobValue(KNOB_MIX);
-	if(raw<0.75f){
+	if(raw < kMixCrossover){
 		input_dry_mix = 1.0f;
-		input_wet_mix = (raw / 0.75f);
-	}else if(raw>=0.75f){
+		input_wet_mix = (raw / kMixCrossover);
+	} else if(raw >= kMixCrossover){
 		// Roll off dry at high mix values
-		input_dry_mix = 1.0f - 4*(raw-0.75f);
+		input_dry_mix = 1.0f - kMixDryRolloffScale*(raw - kMixCrossover);
 		input_wet_mix = 1.0f;
 	}
 	// Feedback
 	raw = hw.GetKnobValue(KNOB_FEEDBACK);
-	input_feedback = raw*(1.1f);
+	input_feedback = raw * kFeedbackScale;
 	// smooth_feedback += (hw.GetKnobValue(1)*(1.4f) - smooth_feedback) * ctrl_coeff;
 	// low pass filter fc
-	raw = 100.0f * powf(120.0f, hw.GetKnobValue(KNOB_LPF)); // 100 hz to 12khz logscale
+	raw = kLpfBaseHz * powf(kLpfOctaveRange, hw.GetKnobValue(KNOB_LPF)); // 100 hz to 12khz logscale
 	input_lpFc = expf(-2.0f * PI_F * raw / Fs); // convert hz to 1 pole lowpass coeff
 	// squre the raw 0 - 1 value for G: low G values are more drastic
 	raw = hw.GetKnobValue(KNOB_SATURATION);
-	input_saturationG = (1.0f + (raw * 2.0f));
+	input_saturationG = (1.0f + (raw * kSaturationGRange));
 
 	raw = hw.GetKnobValue(KNOB_WOW);
-	wow_depth = 100.0f + 2000.0f*raw;
+	wow_depth = kWowDepthMin + kWowDepthRange * raw;
 
 	// Age
 	raw = hw.GetKnobValue(KNOB_AGE);
 	// Hiss level (between -100dB and -40dB)
-	dropout_threshold = 1.01f - 0.9f*raw;
-	hiss_level_scalar = DBToMag(-100.0f + 60.0f*raw);
+	dropout_threshold = 1.01f - kDropoutRange * raw;
+	hiss_level_scalar = DBToMag(kHissMinDb + kHissDbRange * raw);
 	// get random value [0 1], bias around 0.0, scale by age, decimate. this value is applied to
 	// scale the wow lfo 
-	float wow_freq_augment = 1-(((daisy::Random::GetFloat()-0.5f)*raw)*0.1);
+	float wow_freq_augment = 1.0f - (((daisy::Random::GetFloat() - 0.5f) * raw) * kWowAugmentScale);
 	
 
 	// Dub Macros:
@@ -137,9 +159,9 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out, s
 	}
 	if(dub_held){
 		// augment input gain target
-		input_gain = 1.71;
-		input_dry_mix = 0.01;
-		input_wet_mix = 1.0;
+		input_gain = kDubInputGain;
+		input_dry_mix = kDubDryMix;
+		input_wet_mix = kDubWetMix;
 	}
 	// Input smoothing
 	smooth_gain += (input_gain - smooth_gain) * mix_coeff;
@@ -238,31 +260,48 @@ int main(void)
 	for(size_t i = 0; i < DaisyField::KNOB_LAST; i++){
 		knobPrev[i] = hw.GetKnobValue(i);
 	}
+	int num_lines = 4;
+	int cur_line = 0;
+	int mru[DaisyField::KNOB_LAST];
+	int mru_count = 0;
 	while(1) {
 		// Display manager
 		uint32_t now = System::GetNow();
-		if(now - displayTimer >= 40)
+		if(now - displayTimer >= kDisplayRefreshMs)
 		{
 			displayTimer = now;
 
 			for(size_t i = 0; i < DaisyField::KNOB_LAST; i++){
 				float v = hw.GetKnobValue(i);
 				if(fabsf(v - knobPrev[i]) > knobThreshold){
-					activeKnob = (int)i;
+					int from = mru_count;
+					for(int k = 0; k < mru_count; k++){
+						if(mru[k]==i){
+							from = k; break; 
+						}
+					}
+					if(from==mru_count && mru_count < DaisyField::KNOB_LAST){
+						mru_count++;
+					}
+					for(int k = (from < mru_count ? from : mru_count - 1); k > 0; k--){
+						mru[k] = mru[k - 1];
+					}
+					mru[0]=i;
 				}
 				knobPrev[i] = v;
 			}
 
-			FixedCapStr<32> str("Knob ");
-			str.AppendInt(activeKnob + 1);
-			str.Append(": ");
-			str.AppendFloat(hw.GetKnobValue(activeKnob), 3);
-
 			hw.display.Fill(false);
-			hw.display.SetCursor(0,0);
-			hw.display.WriteString(str.Cstr(), Font_7x10, true);
+			int rows = (mru_count < 4) ? mru_count : 4;
+			for(int r = 0; r < rows; r++){
+				int id = mru[r];
+				FixedCapStr<32> str(knobNames[id]);
+				str.Append(": ");
+				str.AppendFloat(hw.GetKnobValue(id), 3);
+				hw.display.SetCursor(0, r*12);
+				hw.display.WriteString(str.Cstr(), Font_7x10, true);
+			}
 			hw.display.Update();
-
 		}
 	}
 }
